@@ -106,6 +106,19 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
 
+    def _inject_runtime_context(
+        self,
+        user_content: str | list[dict[str, Any]],
+        channel: str | None,
+        chat_id: str | None,
+    ) -> str | list[dict[str, Any]]:
+        """Prepend runtime context (timestamp, channel) to user content."""
+        runtime_ctx = self._build_runtime_context(channel, chat_id)
+        if isinstance(user_content, str):
+            return f"{runtime_ctx}\n\n{user_content}"
+        else:
+            return [{"type": "text", "text": runtime_ctx}] + user_content
+
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
         parts = []
@@ -127,22 +140,34 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build the complete message list for an LLM call."""
-        runtime_ctx = self._build_runtime_context(channel, chat_id)
+        """Build the complete message list for an LLM call.
+
+        Args:
+            history: Previous conversation messages.
+            current_message: The new user message.
+            skill_names: Optional skills to include.
+            media: Optional list of local file paths for images/media.
+            channel: Current channel (telegram, feishu, etc.).
+            chat_id: Current chat/user ID.
+
+        Returns:
+            List of messages including system prompt.
+        """
+        messages = []
+
+        # System prompt (static — no timestamp, maximises cache hit rate)
+        system_prompt = self.build_system_prompt(skill_names)
+        messages.append({"role": "system", "content": system_prompt})
+
+        # History
+        messages.extend(history)
+
+        # Current user message with runtime context (timestamp, channel) prepended
         user_content = self._build_user_content(current_message, media)
+        user_content = self._inject_runtime_context(user_content, channel, chat_id)
+        messages.append({"role": "user", "content": user_content})
 
-        # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
-        if isinstance(user_content, str):
-            merged = f"{runtime_ctx}\n\n{user_content}"
-        else:
-            merged = [{"type": "text", "text": runtime_ctx}] + user_content
-
-        return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
-            *history,
-            {"role": "user", "content": merged},
-        ]
+        return messages
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""
